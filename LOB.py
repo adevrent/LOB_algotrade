@@ -4,89 +4,119 @@ import torch
 from torch import nn
 import numpy as np
 
-# Generic architecture
-class NBEATSBlock(nn.Module):
-    def __init__(self, H, n, dropout_prob=0.1):
-        """
-        Parameters:
-        H (int): Forecast horizon (number of future time steps to predict)
-        n (int): How many times the forecast horizon to look back
-        """
+import torch
+import torch.nn as nn
+
+def autopad(input_len, kernel_length, stride):
+    # Computes the symmetric padding needed to preserve the input_len.
+    P = ((stride - 1) * input_len - stride + kernel_length) // 2
+    return P
+
+class ConvBlock1x2_1(nn.Module):
+    def __init__(self, leaky_slope=0.01):
         super().__init__()
-        self.stem = nn.Sequential(  # input size: (batch_size, 1, H*n)
-            nn.Linear(in_features=H*n, out_features=512), nn.ReLU(), nn.Dropout(dropout_prob),
-            nn.Linear(in_features=512, out_features=512), nn.ReLU(), nn.Dropout(dropout_prob),
-            nn.Linear(in_features=512, out_features=512), nn.ReLU(), nn.Dropout(dropout_prob),
-            nn.Linear(in_features=512, out_features=512), nn.ReLU()
-        )
-
-        # Generate thetas for backcast and forecast
-        self.b1 = nn.Linear(in_features=512, out_features=512)
-        self.b2 = nn.Linear(in_features=512, out_features=512)
-
-        # Generate the backcast and forecast
-        self.g_b = nn.Linear(in_features=512, out_features=H*n)
-        self.g_f = nn.Linear(in_features=512, out_features=H)
+        # Shape of a single input is (time, features) = (100, 40)
+        self.m, self.n = (100, 40)
+        # We add padding to keep the time dimension the same
+        # First layer: 1x2@16 (stride=1x2)
+        self.conv1 = nn.Sequential(nn.Conv2d(in_channels=1, out_channels=16, kernel_size=(1, 2), stride=(1, 2), padding=(autopad(self.m, 1, 1), 0)), nn.LeakyReLU(leaky_slope))
+        # Second layer: 4x1@16
+        self.conv2 = nn.Sequential(nn.Conv2d(in_channels=16, out_channels=16, kernel_size=(4, 1), stride=(1, 1), padding=(autopad(self.m, 4, 1), 0)), nn.LeakyReLU(leaky_slope))
+        # Third layer: 4x1@16
+        self.conv3 = nn.Sequential(nn.Conv2d(in_channels=16, out_channels=16, kernel_size=(4, 1), stride=(1, 1), padding=(autopad(self.m, 4, 1), 0)), nn.LeakyReLU(leaky_slope))
 
     def forward(self, x):
-        x = self.stem(x)
-
-        # Generate thetas for backcast and forecast
-        theta_b = self.b1(x)  # backcast
-        theta_f = self.b2(x)  # forecast
-
-        x_bc = self.g_b(theta_b)
-        x_fc = self.g_f(theta_f)
-
-        return x_bc, x_fc
+        # Input shape: (batch, 1, 100, 40)
+        x = self.conv1(x)  # → (batch, 16, 100, 20)
+        x = self.conv2(x)  # → (batch, 16, 100, 20)
+        x = self.conv3(x)  # → (batch, 16, 100, 20)
+        return x
     
-class NBEATSStack(nn.Module):
-    def __init__(self, K, H, n):
-        """
-        Parameters:
-        K (int): Number of blocks in the stack
-        H (int): Forecast horizon (number of future time steps to predict)
-        n (int): How many times the forecast horizon to look back
-        """
-        self.H = H
+class ConvBlock1x2_2(nn.Module):
+    def __init__(self, leaky_slope=0.01):
         super().__init__()
-        self.blocks = nn.ModuleList([NBEATSBlock(H, n) for _ in range(K)])
+        # Shape of a single input is (time, features) = (100, 20)
+        self.m, self.n = (100, 20)
+        # We add padding to keep the time dimension the same
+        # First layer: 1x2@16 (stride=1x2)
+        self.conv1 = nn.Sequential(nn.Conv2d(in_channels=16, out_channels=16, kernel_size=(1, 2), stride=(1, 2), padding=(autopad(self.m, 1, 1), 0)), nn.LeakyReLU(leaky_slope))
+        # Second layer: 4x1@16
+        self.conv2 = nn.Sequential(nn.Conv2d(in_channels=16, out_channels=16, kernel_size=(4, 1), stride=(1, 1), padding=(autopad(self.m, 4, 1), 0)), nn.LeakyReLU(leaky_slope))
+        # Third layer: 4x1@16
+        self.conv3 = nn.Sequential(nn.Conv2d(in_channels=16, out_channels=16, kernel_size=(4, 1), stride=(1, 1), padding=(autopad(self.m, 4, 1), 0)), nn.LeakyReLU(leaky_slope))
 
     def forward(self, x):
-        x_fc_sum = torch.zeros(x.size(0), self.H, dtype=x.dtype).to(x.device)
-        residual = x  # start with the original input
-        for block in self.blocks:
-            x_bc, x_fc = block(residual)
-            residual = residual - x_bc  # update residual using the block’s input
-            x_fc_sum += x_fc
-        return residual, x_fc_sum
+        # Input shape: (batch, 16, 100, 20)
+        x = self.conv1(x)  # → (batch, 16, 100, 10)
+        x = self.conv2(x)  # → (batch, 16, 100, 10)
+        x = self.conv3(x)  # → (batch, 16, 100, 10)
+        return x
     
-class NBEATS(nn.Module):
-    def __init__(self, M, K, H, n):
-        """
-        Parameters:
-        M (int): Number of stacks in the network
-        K (int): Number of blocks in the stack
-        H (int): Forecast horizon (number of future time steps to predict)
-        n (int): How many times the forecast horizon to look back
-        """
+class ConvBlock1x10(nn.Module):
+    def __init__(self, leaky_slope=0.01):
         super().__init__()
-        self.H = H
-        self.stacks = nn.ModuleList([NBEATSStack(K, H, n) for _ in range(M)])
+        # Shape of a single input is (time, features) = (100, 10)
+        self.m, self.n = (100, 10)
+        # We add padding to keep the time dimension the same
+        # First layer: 1x10@16 (stride=1x2)
+        self.conv1 = nn.Sequential(nn.Conv2d(in_channels=16, out_channels=16, kernel_size=(1, 10), stride=(1, 1), padding=(autopad(self.m, 1, 1), 0)), nn.LeakyReLU(leaky_slope))
+        # Second layer: 4x1@16
+        self.conv2 = nn.Sequential(nn.Conv2d(in_channels=16, out_channels=16, kernel_size=(4, 1), stride=(1, 1), padding=(autopad(self.m, 4, 1), 0)), nn.LeakyReLU(leaky_slope))
+        # Third layer: 4x1@16
+        self.conv3 = nn.Sequential(nn.Conv2d(in_channels=16, out_channels=16, kernel_size=(4, 1), stride=(1, 1), padding=(autopad(self.m, 4, 1), 0)), nn.LeakyReLU(leaky_slope))
+
+    def forward(self, x):
+        # Input shape: (batch, 16, 100, 10)
+        x = self.conv1(x)  # → (batch, 16, 100, 1)
+        x = self.conv2(x)  # → (batch, 16, 100, 1)
+        x = self.conv3(x)  # → (batch, 16, 100, 1)
+        return x
+    
+class ConvStack(nn.Module):
+    def __init__(self, leaky_slope=0.01):
+        super().__init__()
+        self.block1 = ConvBlock1x2_1(leaky_slope)
+        self.block2 = ConvBlock1x2_2(leaky_slope)
+        self.block3 = ConvBlock1x10(leaky_slope)
     
     def forward(self, x):
-        # Initialize forecast accumulator
-        forecast_total = torch.zeros(x.size(0), self.H, 
-                                  device=x.device, dtype=x.dtype)
-        residual = x
+        # Input shape: (batch, 1, 100, 40))
+        x = self.block1(x)  # → (batch, 16, 100, 20)
+        x = self.block2(x)  # → (batch, 16, 100, 10)
+        x = self.block3(x)  # → (batch, 16, 100, 1)
+        return x
+    
+class Inception(nn.Module):
+    def __init__(self, leaky_slope=0.01):
+        super(Inception, self).__init__()
+        # Shape of a single input is (time, features) = (100, 1)
+        self.m, self.n = (100, 1)
+        # Branch 1
+        self.b1_conv1 = nn.Sequential(nn.Conv2d(in_channels=16, out_channels=32, kernel_size=(1, 1), stride=(1, 1), padding=(autopad(self.m, 1, 1), 0)), nn.LeakyReLU(leaky_slope))
+        self.b1_conv2 = nn.Sequential(nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(3, 1), stride=(1, 1), padding=(autopad(self.m, 3, 1), 0)), nn.LeakyReLU(leaky_slope))
+        # Branch 2
+        self.b2_conv1 = nn.Sequential(nn.Conv2d(in_channels=16, out_channels=32, kernel_size=(1, 1), stride=(1, 1), padding=(autopad(self.m, 1, 1), 0)), nn.LeakyReLU(leaky_slope))
+        self.b2_conv2 = nn.Sequential(nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(5, 1), stride=(1, 1), padding=(autopad(self.m, 5, 1), 0)), nn.LeakyReLU(leaky_slope))
+        # Branch 3
+        self.b3_pool = nn.Sequential(nn.MaxPool2d(kernel_size=(3, 1), stride=(1, 1), padding=(autopad(self.m, 3, 1), 0)))
+        self.b3_conv = nn.Sequential(nn.Conv2d(in_channels=16, out_channels=32, kernel_size=(1, 1), stride=(1, 1), padding=(autopad(self.m, 1, 1), 0)), nn.LeakyReLU(leaky_slope))
         
-        for stack in self.stacks:
-            # Process through stack
-            residual, stack_forecast = stack(residual)
-            # Aggregate forecasts
-            forecast_total += stack_forecast
-            
-        return forecast_total
+    def forward(self, x):
+        # Branch 1
+        b1 = self.b1_conv1(x)  # → (batch, 32, 100, 1)
+        b1 = self.b1_conv2(b1)  # → (batch, 32, 100, 1)
+        # Branch 2
+        b2 = self.b2_conv1(x)  # → (batch, 32, 100, 1)
+        b2 = self.b2_conv2(b2)  # → (batch, 32, 100, 1)
+        # Branch 3
+        b3 = self.b3_pool(x)  # → (batch, 16, 100, 1)
+        b3 = self.b3_conv(b3)  # → (batch, 32, 100, 1)
+        return torch.cat((b1, b2, b3), dim=1)  # → (batch, 96, 100, 1)
+    
+class LSTM(nn.Module):
+    # TODO: Implement the LSTM class
+
+##############################################################################################################
 
 def train_NBEATS(train_loader, val_loader, model, loss_func, optimizer, device, num_epochs, feature="prices", patience=10):
     train_losses = []
